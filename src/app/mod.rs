@@ -30,7 +30,11 @@ pub fn run() -> io::Result<()> {
     let resume = choose_resume_mode(snapshot.as_ref());
     let counters = PerfCounters::open(&config.hyperv_vm_name)?;
     let memory_total = physical_memory_total();
-    let mut csv = CsvWriter::create(&config.csv_dir)?;
+    let mut csv = if config.csv_output {
+        Some(CsvWriter::create(&config.csv_dir)?)
+    } else {
+        None
+    };
 
     let mut timestamp = 0u64;
     let mut disk_read_sum = 0.0;
@@ -148,24 +152,26 @@ pub fn run() -> io::Result<()> {
             &record_time,
         )?;
 
-        csv.write_row(&CsvRow {
-            current_time: time::current_time_display(),
-            record_time,
-            sample,
-            memory_usage_percentage,
-            memory_used,
-            memory_total: memory_total as f64,
-            disk_read_sum,
-            disk_write_sum,
-            network_received_value,
-            network_sent_value,
-            network_received_sum,
-            network_sent_sum,
-            tailscale_received_latest,
-            tailscale_sent_latest,
-            tailscale_received_absolute,
-            tailscale_sent_absolute,
-        })?;
+        if let Some(csv) = csv.as_mut() {
+            csv.write_row(&CsvRow {
+                current_time: time::current_time_display(),
+                record_time,
+                sample,
+                memory_usage_percentage,
+                memory_used,
+                memory_total: memory_total as f64,
+                disk_read_sum,
+                disk_write_sum,
+                network_received_value,
+                network_sent_value,
+                network_received_sum,
+                network_sent_sum,
+                tailscale_received_latest,
+                tailscale_sent_latest,
+                tailscale_received_absolute,
+                tailscale_sent_absolute,
+            })?;
+        }
 
         timestamp += 1;
         write_snapshot(

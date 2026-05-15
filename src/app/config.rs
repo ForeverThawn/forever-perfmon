@@ -2,10 +2,11 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-const CONFIG_FILE: &str = "forever-permon.toml";
+const CONFIG_FILE: &str = "forever-perfmon.toml";
 
 pub struct Config {
     pub csv_dir: PathBuf,
+    pub csv_output: bool,
     pub snapshot_file: PathBuf,
     pub hyperv_vm_name: String,
 }
@@ -15,6 +16,7 @@ impl Config {
         let path = config_path();
         let raw = fs::read_to_string(&path)?;
         let csv_dir = required_string(&raw, "csv_dir")?;
+        let csv_output = optional_bool(&raw, "csv_output").unwrap_or(true);
         let snapshot_dir = required_string(&raw, "snapshot_dir")?;
         let hyperv_vm_name =
             optional_string(&raw, "hyperv_vm_name").unwrap_or_else(|| "ubuntu_22_04".to_string());
@@ -26,6 +28,7 @@ impl Config {
 
         Ok(Self {
             csv_dir: fs::canonicalize(csv_dir)?,
+            csv_output,
             snapshot_file: fs::canonicalize(snapshot_dir)?.join("snapshot.json"),
             hyperv_vm_name,
         })
@@ -50,6 +53,25 @@ fn required_string(raw: &str, key: &str) -> io::Result<String> {
 fn optional_string(raw: &str, key: &str) -> Option<String> {
     raw.lines()
         .find_map(|line| parse_string_assignment(line, key))
+}
+
+fn optional_bool(raw: &str, key: &str) -> Option<bool> {
+    raw.lines()
+        .find_map(|line| parse_bool_assignment(line, key))
+}
+
+fn parse_bool_assignment(line: &str, key: &str) -> Option<bool> {
+    let line = line.split_once('#').map_or(line, |(head, _)| head).trim();
+    let (left, right) = line.split_once('=')?;
+    if left.trim() != key {
+        return None;
+    }
+
+    match right.trim() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
 }
 
 fn parse_string_assignment(line: &str, key: &str) -> Option<String> {
@@ -99,6 +121,7 @@ mod tests {
     fn parses_toml_style_strings() {
         let raw = r#"
 csv_dir = "X:\\_TEMP\\performancer_log"
+csv_output = false
 snapshot_dir = "D:\\snapshots"
 hyperv_vm_name = "ubuntu_22_04"
 "#;
@@ -110,5 +133,6 @@ hyperv_vm_name = "ubuntu_22_04"
             optional_string(raw, "hyperv_vm_name").as_deref(),
             Some("ubuntu_22_04")
         );
+        assert_eq!(optional_bool(raw, "csv_output"), Some(false));
     }
 }
