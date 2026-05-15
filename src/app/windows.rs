@@ -138,6 +138,90 @@ pub struct PerfCounters {
     hyperv_total: Option<isize>,
 }
 
+pub struct NetworkTotals {
+    pub all: IfTotals,
+    pub tailscale: Option<IfTotals>,
+}
+
+struct PdhQuery {
+    handle: isize,
+}
+
+struct MibTable {
+    ptr: *mut MibIfTable2,
+}
+
+impl MibTable {
+    fn get() -> io::Result<Self> {
+        let mut ptr: *mut MibIfTable2 = null_mut();
+        let status = unsafe { GetIfTable2(&mut ptr) };
+        if status == ERROR_SUCCESS && !ptr.is_null() {
+            Ok(Self { ptr })
+        } else if status == ERROR_SUCCESS {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                "GetIfTable2 returned a null table",
+            ))
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("GetIfTable2 failed: 0x{status:08x}"),
+            ))
+        }
+    }
+
+    fn for_each_row(&self, mut f: impl FnMut(MibIfRow2)) {
+        unsafe {
+            let count = (*self.ptr).num_entries as usize;
+            let first = (*self.ptr).table.as_ptr();
+            for i in 0..count {
+                f(*first.add(i));
+            }
+        }
+    }
+}
+
+impl Drop for MibTable {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe {
+                FreeMibTable(self.ptr.cast());
+            }
+        }
+    }
+}
+
+impl PdhQuery {
+    fn open() -> io::Result<Self> {
+        let mut handle = 0isize;
+        let status = unsafe { PdhOpenQueryW(null(), 0, &mut handle) };
+        if status == ERROR_SUCCESS {
+            Ok(Self { handle })
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("PdhOpenQueryW failed: 0x{status:08x}"),
+            ))
+        }
+    }
+
+    fn into_raw(mut self) -> isize {
+        let handle = self.handle;
+        self.handle = 0;
+        handle
+    }
+}
+
+impl Drop for PdhQuery {
+    fn drop(&mut self) {
+        if self.handle != 0 {
+            unsafe {
+                PdhCloseQuery(self.handle);
+            }
+        }
+    }
+}
+
 impl Drop for PerfCounters {
     fn drop(&mut self) {
         if self.query != 0 {
@@ -150,47 +234,54 @@ impl Drop for PerfCounters {
 
 impl PerfCounters {
     pub fn open(hyperv_vm_name: Option<&str>) -> io::Result<Self> {
-        let mut query = 0isize;
-        let status = unsafe { PdhOpenQueryW(null(), 0, &mut query) };
-        if status != ERROR_SUCCESS {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("PdhOpenQueryW failed: 0x{status:08x}"),
-            ));
-        }
+        let query_guard = PdhQuery::open()?;
+        let query = query_guard.handle;
+
+        let cpu_usage = add_counter(query, r"\Processor(_Total)\% Processor Time")?;
+        let cpu_user_usage = add_counter(query, r"\Processor(_Total)\% User Time")?;
+        let cpu_privileged_usage = add_counter(query, r"\Processor(_Total)\% Privileged Time")?;
+        let cpu_dpc_usage = add_counter(query, r"\Processor(_Total)\% DPC Time")?;
+        let memory_committed_percentage = add_counter(query, r"\Memory\% Committed Bytes In Use")?;
+        let memory_avail = add_counter(query, r"\Memory\Available Bytes")?;
+        let memory_committed = add_counter(query, r"\Memory\Committed Bytes")?;
+        let memory_commit_limit = add_counter(query, r"\Memory\Commit Limit")?;
+        let disk_read = add_counter(query, r"\PhysicalDisk(_Total)\Disk Read Bytes/sec")?;
+        let disk_write = add_counter(query, r"\PhysicalDisk(_Total)\Disk Write Bytes/sec")?;
+        let hyperv_avail = hyperv_vm_name.and_then(|hyperv_vm_name| {
+            add_counter(
+                query,
+                &format!(
+                    r"\Hyper-V Dynamic Memory VM({})\guest available memory",
+                    hyperv_vm_name
+                ),
+            )
+            .ok()
+        });
+        let hyperv_total = hyperv_vm_name.and_then(|hyperv_vm_name| {
+            add_counter(
+                query,
+                &format!(
+                    r"\Hyper-V Dynamic Memory VM({})\physical memory",
+                    hyperv_vm_name
+                ),
+            )
+            .ok()
+        });
 
         let counters = Self {
-            query,
-            cpu_usage: add_counter(query, r"\Processor(_Total)\% Processor Time")?,
-            cpu_user_usage: add_counter(query, r"\Processor(_Total)\% User Time")?,
-            cpu_privileged_usage: add_counter(query, r"\Processor(_Total)\% Privileged Time")?,
-            cpu_dpc_usage: add_counter(query, r"\Processor(_Total)\% DPC Time")?,
-            memory_committed_percentage: add_counter(query, r"\Memory\% Committed Bytes In Use")?,
-            memory_avail: add_counter(query, r"\Memory\Available Bytes")?,
-            memory_committed: add_counter(query, r"\Memory\Committed Bytes")?,
-            memory_commit_limit: add_counter(query, r"\Memory\Commit Limit")?,
-            disk_read: add_counter(query, r"\PhysicalDisk(_Total)\Disk Read Bytes/sec")?,
-            disk_write: add_counter(query, r"\PhysicalDisk(_Total)\Disk Write Bytes/sec")?,
-            hyperv_avail: hyperv_vm_name.and_then(|hyperv_vm_name| {
-                add_counter(
-                    query,
-                    &format!(
-                        r"\Hyper-V Dynamic Memory VM({})\guest available memory",
-                        hyperv_vm_name
-                    ),
-                )
-                .ok()
-            }),
-            hyperv_total: hyperv_vm_name.and_then(|hyperv_vm_name| {
-                add_counter(
-                    query,
-                    &format!(
-                        r"\Hyper-V Dynamic Memory VM({})\physical memory",
-                        hyperv_vm_name
-                    ),
-                )
-                .ok()
-            }),
+            query: query_guard.into_raw(),
+            cpu_usage,
+            cpu_user_usage,
+            cpu_privileged_usage,
+            cpu_dpc_usage,
+            memory_committed_percentage,
+            memory_avail,
+            memory_committed,
+            memory_commit_limit,
+            disk_read,
+            disk_write,
+            hyperv_avail,
+            hyperv_total,
         };
 
         let status = unsafe { PdhCollectQueryData(counters.query) };
@@ -249,57 +340,39 @@ pub fn physical_memory_total() -> u64 {
     }
 }
 
-pub fn interface_totals() -> io::Result<IfTotals> {
-    read_interface_table(|row| IfTotals {
-        received_bytes: row.in_octets,
-        sent_bytes: row.out_octets,
-    })
-    .map(|items| items.into_iter().fold(IfTotals::default(), add_totals))
-}
+pub fn network_totals() -> io::Result<NetworkTotals> {
+    let table = MibTable::get()?;
+    let mut all = IfTotals::default();
+    let mut tailscale = IfTotals::default();
+    let mut tailscale_found = false;
 
-pub fn tailscale_totals() -> io::Result<Option<IfTotals>> {
-    let totals = read_interface_table(|row| {
+    table.for_each_row(|row| {
+        all = add_totals(
+            all,
+            IfTotals {
+                received_bytes: row.in_octets,
+                sent_bytes: row.out_octets,
+            },
+        );
+
         let alias = wide_array_to_string(&row.alias).to_ascii_lowercase();
         let description = wide_array_to_string(&row.description).to_ascii_lowercase();
         if alias.starts_with("tailscale") || description.contains("tailscale") {
-            Some(IfTotals {
-                received_bytes: row.in_octets,
-                sent_bytes: row.out_octets,
-            })
-        } else {
-            None
+            tailscale_found = true;
+            tailscale = add_totals(
+                tailscale,
+                IfTotals {
+                    received_bytes: row.in_octets,
+                    sent_bytes: row.out_octets,
+                },
+            );
         }
-    })?;
+    });
 
-    let mut found = false;
-    let mut sum = IfTotals::default();
-    for totals in totals.into_iter().flatten() {
-        found = true;
-        sum = add_totals(sum, totals);
-    }
-    Ok(found.then_some(sum))
-}
-
-fn read_interface_table<T>(map: impl Fn(MibIfRow2) -> T) -> io::Result<Vec<T>> {
-    let mut table_ptr: *mut MibIfTable2 = null_mut();
-    let status = unsafe { GetIfTable2(&mut table_ptr) };
-    if status != ERROR_SUCCESS {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("GetIfTable2 failed: 0x{status:08x}"),
-        ));
-    }
-
-    let mut rows = Vec::new();
-    unsafe {
-        let count = (*table_ptr).num_entries as usize;
-        let first = (*table_ptr).table.as_ptr();
-        for i in 0..count {
-            rows.push(map(*first.add(i)));
-        }
-        FreeMibTable(table_ptr.cast());
-    }
-    Ok(rows)
+    Ok(NetworkTotals {
+        all,
+        tailscale: tailscale_found.then_some(tailscale),
+    })
 }
 
 fn add_counter(query: isize, path: &str) -> io::Result<isize> {
@@ -356,7 +429,9 @@ mod tests {
 
     #[test]
     fn reads_windows_interface_totals() {
-        let totals = interface_totals().expect("interface table should be readable");
+        let totals = network_totals()
+            .expect("interface table should be readable")
+            .all;
         let _ = totals.received_bytes;
         let _ = totals.sent_bytes;
     }

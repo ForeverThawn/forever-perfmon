@@ -80,6 +80,7 @@ mod tests {
     fn formats_elapsed_time_like_the_script() {
         assert_eq!(format_elapsed(0), "   0:  0:  0:  0");
         assert_eq!(format_elapsed(90_061), "   1:  1:  1:  1");
+        assert_eq!(format_elapsed(60 * 86_400), "  60:  0:  0:  0");
     }
 
     #[test]
@@ -87,5 +88,9 @@ mod tests {
         assert_eq!(format_bytes(512.0), "            512  B ");
         assert_eq!(format_bytes(1536.0), "          1.500 KB ");
         assert_eq!(format_bytes(1_572_864.0), "          1.500 MB ");
+        assert_eq!(
+            format_bytes(10.0 * 0x10000000000u64 as f64),
+            "         10.000 TB "
+        );
     }
 }

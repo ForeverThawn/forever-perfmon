@@ -20,7 +20,7 @@ use format::{format_elapsed, percentage};
 use render::render_screen;
 use snapshot::{Snapshot, read_snapshot, write_snapshot};
 use tailscale::TailscaleTotalState;
-use windows::{PerfCounters, interface_totals, physical_memory_total, tailscale_totals};
+use windows::{PerfCounters, network_totals, physical_memory_total};
 
 pub fn run() -> io::Result<()> {
     console::enable_ansi_colors();
@@ -67,7 +67,9 @@ pub fn run() -> io::Result<()> {
         }
     }
 
-    let mut previous_if_totals = interface_totals().unwrap_or_default();
+    let mut previous_if_totals = network_totals()
+        .map(|totals| totals.all)
+        .unwrap_or_default();
     let mut previous_if_instant = Instant::now();
     let mut hyperv_total_old = None;
 
@@ -83,25 +85,28 @@ pub fn run() -> io::Result<()> {
             Err(_) => continue,
         };
 
-        let current_if_totals = interface_totals().unwrap_or(previous_if_totals);
-        let tailscale_absolute = tailscale_totals().ok().flatten();
-        let network_received_value = current_if_totals
+        let current_network_totals = network_totals().ok();
+        let current_if_totals = current_network_totals
+            .as_ref()
+            .map(|totals| totals.all)
+            .unwrap_or(previous_if_totals);
+        let tailscale_absolute = current_network_totals.and_then(|totals| totals.tailscale);
+        let network_received_delta = current_if_totals
             .received_bytes
-            .saturating_sub(previous_if_totals.received_bytes)
-            as f64
-            / elapsed;
-        let network_sent_value = current_if_totals
+            .saturating_sub(previous_if_totals.received_bytes);
+        let network_sent_delta = current_if_totals
             .sent_bytes
-            .saturating_sub(previous_if_totals.sent_bytes) as f64
-            / elapsed;
+            .saturating_sub(previous_if_totals.sent_bytes);
+        let network_received_value = network_received_delta as f64 / elapsed;
+        let network_sent_value = network_sent_delta as f64 / elapsed;
         previous_if_totals = current_if_totals;
 
         let memory_used = (memory_total as f64 - sample.memory_avail).max(0.0);
         let memory_usage_percentage = percentage(memory_used, memory_total as f64);
-        disk_read_sum += sample.disk_read;
-        disk_write_sum += sample.disk_write;
-        network_received_sum += network_received_value;
-        network_sent_sum += network_sent_value;
+        disk_read_sum += sample.disk_read * elapsed;
+        disk_write_sum += sample.disk_write * elapsed;
+        network_received_sum += network_received_delta as f64;
+        network_sent_sum += network_sent_delta as f64;
 
         let tailscale_received_absolute = tailscale_absolute.map(|totals| totals.received_bytes);
         let tailscale_sent_absolute = tailscale_absolute.map(|totals| totals.sent_bytes);
@@ -154,8 +159,9 @@ pub fn run() -> io::Result<()> {
             &record_time,
         )?;
 
-        if let Some(csv) = csv.as_mut() {
-            csv.write_row(&CsvRow {
+        let mut disable_csv = false;
+        if let Some(csv_writer) = csv.as_mut() {
+            let csv_result = csv_writer.write_row(&CsvRow {
                 current_time: time::current_time_display(),
                 record_time,
                 sample,
@@ -172,7 +178,13 @@ pub fn run() -> io::Result<()> {
                 tailscale_sent_latest,
                 tailscale_received_absolute,
                 tailscale_sent_absolute,
-            })?;
+            });
+            if csv_result.is_err() {
+                disable_csv = true;
+            }
+        }
+        if disable_csv {
+            csv = None;
         }
 
         timestamp += 1;
