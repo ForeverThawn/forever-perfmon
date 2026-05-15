@@ -1,10 +1,6 @@
 # forever-perfmon
 
-Rust rewrite of the original 
-
-[performancer]: https://github.com/ForeverThawn/Performancer
-
- PowerShell monitor.
+Rust rewrite of the original [performancer](https://github.com/ForeverThawn/Performancer) PowerShell monitor.
 
 ## Config
 
