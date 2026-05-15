@@ -149,7 +149,7 @@ impl Drop for PerfCounters {
 }
 
 impl PerfCounters {
-    pub fn open(hyperv_vm_name: &str) -> io::Result<Self> {
+    pub fn open(hyperv_vm_name: Option<&str>) -> io::Result<Self> {
         let mut query = 0isize;
         let status = unsafe { PdhOpenQueryW(null(), 0, &mut query) };
         if status != ERROR_SUCCESS {
@@ -171,22 +171,26 @@ impl PerfCounters {
             memory_commit_limit: add_counter(query, r"\Memory\Commit Limit")?,
             disk_read: add_counter(query, r"\PhysicalDisk(_Total)\Disk Read Bytes/sec")?,
             disk_write: add_counter(query, r"\PhysicalDisk(_Total)\Disk Write Bytes/sec")?,
-            hyperv_avail: add_counter(
-                query,
-                &format!(
-                    r"\Hyper-V Dynamic Memory VM({})\guest available memory",
-                    hyperv_vm_name
-                ),
-            )
-            .ok(),
-            hyperv_total: add_counter(
-                query,
-                &format!(
-                    r"\Hyper-V Dynamic Memory VM({})\physical memory",
-                    hyperv_vm_name
-                ),
-            )
-            .ok(),
+            hyperv_avail: hyperv_vm_name.and_then(|hyperv_vm_name| {
+                add_counter(
+                    query,
+                    &format!(
+                        r"\Hyper-V Dynamic Memory VM({})\guest available memory",
+                        hyperv_vm_name
+                    ),
+                )
+                .ok()
+            }),
+            hyperv_total: hyperv_vm_name.and_then(|hyperv_vm_name| {
+                add_counter(
+                    query,
+                    &format!(
+                        r"\Hyper-V Dynamic Memory VM({})\physical memory",
+                        hyperv_vm_name
+                    ),
+                )
+                .ok()
+            }),
         };
 
         let status = unsafe { PdhCollectQueryData(counters.query) };
@@ -359,7 +363,7 @@ mod tests {
 
     #[test]
     fn collects_pdh_sample() {
-        let counters = PerfCounters::open("ubuntu_22_04").expect("pdh query should open");
+        let counters = PerfCounters::open(Some("ubuntu_22_04")).expect("pdh query should open");
         thread::sleep(Duration::from_secs(1));
         let sample = counters.collect().expect("pdh sample should collect");
         assert!(sample.cpu_usage >= 0.0);

@@ -21,6 +21,7 @@ pub fn render_screen(
     tailscale_sent_latest: Option<u64>,
     tailscale_received_absolute: Option<u64>,
     tailscale_sent_absolute: Option<u64>,
+    hyperv_enabled: bool,
     hyperv_allocating: bool,
     record_time: &str,
 ) -> io::Result<()> {
@@ -76,7 +77,9 @@ pub fn render_screen(
     );
     print_rate_line("Network  Sent    : ", network_sent_value, network_sent_sum);
 
-    render_hyperv(sample, hyperv_allocating);
+    if hyperv_enabled {
+        render_hyperv(sample, hyperv_allocating);
+    }
     render_tailscale_line(
         "Tailscale Received:",
         tailscale_received_delta,

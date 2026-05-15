@@ -8,7 +8,7 @@ pub struct Config {
     pub csv_dir: PathBuf,
     pub csv_output: bool,
     pub snapshot_file: PathBuf,
-    pub hyperv_vm_name: String,
+    pub hyperv_vm_name: Option<String>,
 }
 
 impl Config {
@@ -18,8 +18,8 @@ impl Config {
         let csv_dir = required_string(&raw, "csv_dir")?;
         let csv_output = optional_bool(&raw, "csv_output").unwrap_or(true);
         let snapshot_dir = required_string(&raw, "snapshot_dir")?;
-        let hyperv_vm_name =
-            optional_string(&raw, "hyperv_vm_name").unwrap_or_else(|| "ubuntu_22_04".to_string());
+        let hyperv_vm_name = optional_string_or_false(&raw, "hyperv_vm_name")
+            .unwrap_or_else(|| Some("ubuntu_22_04".to_string()));
 
         let csv_dir = PathBuf::from(csv_dir);
         let snapshot_dir = PathBuf::from(snapshot_dir);
@@ -58,6 +58,14 @@ fn optional_string(raw: &str, key: &str) -> Option<String> {
 fn optional_bool(raw: &str, key: &str) -> Option<bool> {
     raw.lines()
         .find_map(|line| parse_bool_assignment(line, key))
+}
+
+fn optional_string_or_false(raw: &str, key: &str) -> Option<Option<String>> {
+    if let Some(value) = optional_bool(raw, key) {
+        return Some(value.then(|| "ubuntu_22_04".to_string()));
+    }
+
+    optional_string(raw, key).map(Some)
 }
 
 fn parse_bool_assignment(line: &str, key: &str) -> Option<bool> {
@@ -134,5 +142,9 @@ hyperv_vm_name = "ubuntu_22_04"
             Some("ubuntu_22_04")
         );
         assert_eq!(optional_bool(raw, "csv_output"), Some(false));
+        assert_eq!(
+            optional_string_or_false("hyperv_vm_name = false", "hyperv_vm_name"),
+            Some(None)
+        );
     }
 }

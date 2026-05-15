@@ -15,6 +15,8 @@ hyperv_vm_name = "ubuntu_22_04"
 
 It writes `snapshot.json` into the configured snapshot directory. When `csv_output` is `true`, it also writes a timestamped CSV file into `csv_dir`. If a snapshot already exists, press `C` to continue cumulative counters or `R` to reset them. No Enter key is required.
 
+Set `hyperv_vm_name = false` to disable Hyper-V collection and hide the Hyper-V memory row.
+
 While running:
 
 - `Q` exits.

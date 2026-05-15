@@ -28,7 +28,8 @@ pub fn run() -> io::Result<()> {
     let config = Config::load()?;
     let snapshot = read_snapshot(&config.snapshot_file);
     let resume = choose_resume_mode(snapshot.as_ref());
-    let counters = PerfCounters::open(&config.hyperv_vm_name)?;
+    let hyperv_enabled = config.hyperv_vm_name.is_some();
+    let counters = PerfCounters::open(config.hyperv_vm_name.as_deref())?;
     let memory_total = physical_memory_total();
     let mut csv = if config.csv_output {
         Some(CsvWriter::create(&config.csv_dir)?)
@@ -148,6 +149,7 @@ pub fn run() -> io::Result<()> {
             tailscale_sent_latest,
             tailscale_received_absolute,
             tailscale_sent_absolute,
+            hyperv_enabled,
             hyperv_allocating,
             &record_time,
         )?;
