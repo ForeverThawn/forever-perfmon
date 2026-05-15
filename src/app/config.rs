@@ -3,10 +3,18 @@ use std::io;
 use std::path::PathBuf;
 
 const CONFIG_FILE: &str = "forever-perfmon.toml";
+const DEFAULT_CONFIG: &str = r#"snapshot_dir = "X:\\_TEMP\\performancer_log"
+
+csv = false
+csv_dir = "X:\\_TEMP\\performancer_log"
+
+hyperv_vm = false
+hyperv_vm_name = "ubuntu_22_04"
+"#;
 
 pub struct Config {
     pub csv_dir: PathBuf,
-    pub csv_output: bool,
+    pub csv: bool,
     pub snapshot_file: PathBuf,
     pub hyperv_vm_name: Option<String>,
 }
@@ -14,21 +22,37 @@ pub struct Config {
 impl Config {
     pub fn load() -> io::Result<Self> {
         let path = config_path();
-        let raw = fs::read_to_string(&path)?;
-        let csv_dir = required_string(&raw, "csv_dir")?;
-        let csv_output = optional_bool(&raw, "csv_output").unwrap_or(true);
-        let snapshot_dir = required_string(&raw, "snapshot_dir")?;
-        let hyperv_vm_name = optional_string_or_false(&raw, "hyperv_vm_name")
-            .unwrap_or_else(|| Some("ubuntu_22_04".to_string()));
+        if !path.exists() {
+            fs::write(&path, DEFAULT_CONFIG)?;
+        }
 
-        let csv_dir = PathBuf::from(csv_dir);
+        let raw = fs::read_to_string(&path)?;
+        let snapshot_dir = required_string(&raw, "snapshot_dir")?;
+        let csv = optional_bool(&raw, "csv").unwrap_or(false);
+        let csv_dir = required_string(&raw, "csv_dir")?;
+        let hyperv_vm = optional_bool(&raw, "hyperv_vm").unwrap_or(false);
+        let hyperv_vm_name = if hyperv_vm {
+            Some(
+                optional_string(&raw, "hyperv_vm_name")
+                    .unwrap_or_else(|| "ubuntu_22_04".to_string()),
+            )
+        } else {
+            None
+        };
+
         let snapshot_dir = PathBuf::from(snapshot_dir);
-        fs::create_dir_all(&csv_dir)?;
         fs::create_dir_all(&snapshot_dir)?;
+        let csv_dir = if csv {
+            let csv_dir = PathBuf::from(csv_dir);
+            fs::create_dir_all(&csv_dir)?;
+            fs::canonicalize(csv_dir)?
+        } else {
+            PathBuf::from(csv_dir)
+        };
 
         Ok(Self {
-            csv_dir: fs::canonicalize(csv_dir)?,
-            csv_output,
+            csv_dir,
+            csv,
             snapshot_file: fs::canonicalize(snapshot_dir)?.join("snapshot.json"),
             hyperv_vm_name,
         })
@@ -58,14 +82,6 @@ fn optional_string(raw: &str, key: &str) -> Option<String> {
 fn optional_bool(raw: &str, key: &str) -> Option<bool> {
     raw.lines()
         .find_map(|line| parse_bool_assignment(line, key))
-}
-
-fn optional_string_or_false(raw: &str, key: &str) -> Option<Option<String>> {
-    if let Some(value) = optional_bool(raw, key) {
-        return Some(value.then(|| "ubuntu_22_04".to_string()));
-    }
-
-    optional_string(raw, key).map(Some)
 }
 
 fn parse_bool_assignment(line: &str, key: &str) -> Option<bool> {
@@ -129,8 +145,9 @@ mod tests {
     fn parses_toml_style_strings() {
         let raw = r#"
 csv_dir = "X:\\_TEMP\\performancer_log"
-csv_output = false
+csv = false
 snapshot_dir = "D:\\snapshots"
+hyperv_vm = false
 hyperv_vm_name = "ubuntu_22_04"
 "#;
         assert_eq!(
@@ -141,10 +158,7 @@ hyperv_vm_name = "ubuntu_22_04"
             optional_string(raw, "hyperv_vm_name").as_deref(),
             Some("ubuntu_22_04")
         );
-        assert_eq!(optional_bool(raw, "csv_output"), Some(false));
-        assert_eq!(
-            optional_string_or_false("hyperv_vm_name = false", "hyperv_vm_name"),
-            Some(None)
-        );
+        assert_eq!(optional_bool(raw, "csv"), Some(false));
+        assert_eq!(optional_bool(raw, "hyperv_vm"), Some(false));
     }
 }

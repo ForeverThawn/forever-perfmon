@@ -31,7 +31,7 @@ pub fn run() -> io::Result<()> {
     let hyperv_enabled = config.hyperv_vm_name.is_some();
     let counters = PerfCounters::open(config.hyperv_vm_name.as_deref())?;
     let memory_total = physical_memory_total();
-    let mut csv = if config.csv_output {
+    let mut csv = if config.csv {
         Some(CsvWriter::create(&config.csv_dir)?)
     } else {
         None

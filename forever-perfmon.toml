@@ -1,4 +1,7 @@
-csv_dir = "X:\\_TEMP\\performancer_log"
-csv_output = true
 snapshot_dir = "X:\\_TEMP\\performancer_log"
+
+csv = false
+csv_dir = "X:\\_TEMP\\performancer_log"
+
+hyperv_vm = false
 hyperv_vm_name = "ubuntu_22_04"

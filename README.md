@@ -4,18 +4,21 @@ Rust rewrite of the original [performancer](https://github.com/ForeverThawn/Perf
 
 ## Config
 
-The app reads `forever-perfmon.toml` from the repository root:
+The app reads `forever-perfmon.toml` from the program's working directory:
 
 ```toml
-csv_dir = "X:\\_TEMP\\performancer_log"
-csv_output = true
 snapshot_dir = "X:\\_TEMP\\performancer_log"
+
+csv = false
+csv_dir = "X:\\_TEMP\\performancer_log"
+
+hyperv_vm = false
 hyperv_vm_name = "ubuntu_22_04"
 ```
 
-It writes `snapshot.json` into the configured snapshot directory. When `csv_output` is `true`, it also writes a timestamped CSV file into `csv_dir`. If a snapshot already exists, press `C` to continue cumulative counters or `R` to reset them. No Enter key is required.
+If the config file is missing in the program's working directory, the app creates it with the default content above.
 
-Set `hyperv_vm_name = false` to disable Hyper-V collection and hide the Hyper-V memory row.
+It writes `snapshot.json` into the configured snapshot directory. When `csv` is `true`, it also writes a timestamped CSV file into `csv_dir`. When `hyperv_vm` is `true`, it monitors the VM named by `hyperv_vm_name`; when `false`, the Hyper-V memory row is hidden. If a snapshot already exists, press `C` to continue cumulative counters or `R` to reset them. No Enter key is required.
 
 While running:
 
