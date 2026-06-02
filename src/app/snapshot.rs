@@ -3,6 +3,8 @@ use std::path::Path;
 
 use crate::app::time::current_time_saved;
 
+const SNAPSHOT_VERSION: u64 = 8;
+
 #[derive(Clone, Copy)]
 pub struct Snapshot {
     pub timestamp: u64,
@@ -16,6 +18,10 @@ pub struct Snapshot {
 
 pub fn read_snapshot(path: &Path) -> Option<Snapshot> {
     let raw = fs::read_to_string(path).ok()?;
+    if json_u64(&raw, "version") != Some(SNAPSHOT_VERSION) {
+        return None;
+    }
+
     Some(Snapshot {
         timestamp: json_u64(&raw, "timestamp").unwrap_or(0),
         disk_read_sum: json_f64(&raw, "disk_read_sum").unwrap_or(0.0),
@@ -43,7 +49,7 @@ pub fn write_snapshot(path: &Path, snapshot: &Snapshot) {
     let body = format!(
         concat!(
             "{{\n",
-            "  \"version\": 5,\n",
+            "  \"version\": {},\n",
             "  \"saved_at\": \"{}\",\n",
             "  \"timestamp\": {},\n",
             "  \"disk_read_sum\": {:.3},\n",
@@ -54,6 +60,7 @@ pub fn write_snapshot(path: &Path, snapshot: &Snapshot) {
             "  \"tailscale_sent_absolute_bytes\": {}\n",
             "}}\n"
         ),
+        SNAPSHOT_VERSION,
         current_time_saved(),
         snapshot.timestamp,
         snapshot.disk_read_sum,

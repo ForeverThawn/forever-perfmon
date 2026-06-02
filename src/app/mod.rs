@@ -11,7 +11,7 @@ mod windows;
 
 use std::io::{self, Write};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use config::Config;
 use console::{Key, read_key, wait_for_resume_choice};
@@ -67,46 +67,28 @@ pub fn run() -> io::Result<()> {
         }
     }
 
-    let mut previous_if_totals = network_totals()
-        .map(|totals| totals.all)
-        .unwrap_or_default();
-    let mut previous_if_instant = Instant::now();
     let mut hyperv_total_old = None;
 
     clear_screen()?;
 
     loop {
         thread::sleep(Duration::from_secs(1));
-        let elapsed = previous_if_instant.elapsed().as_secs_f64().max(0.001);
-        previous_if_instant = Instant::now();
 
         let sample = match counters.collect() {
             Ok(sample) => sample,
             Err(_) => continue,
         };
 
-        let current_network_totals = network_totals().ok();
-        let current_if_totals = current_network_totals
-            .as_ref()
-            .map(|totals| totals.all)
-            .unwrap_or(previous_if_totals);
-        let tailscale_absolute = current_network_totals.and_then(|totals| totals.tailscale);
-        let network_received_delta = current_if_totals
-            .received_bytes
-            .saturating_sub(previous_if_totals.received_bytes);
-        let network_sent_delta = current_if_totals
-            .sent_bytes
-            .saturating_sub(previous_if_totals.sent_bytes);
-        let network_received_value = network_received_delta as f64 / elapsed;
-        let network_sent_value = network_sent_delta as f64 / elapsed;
-        previous_if_totals = current_if_totals;
+        let tailscale_absolute = network_totals().ok().and_then(|totals| totals.tailscale);
+        let network_received_value = sample.network_received;
+        let network_sent_value = sample.network_sent;
 
         let memory_used = (memory_total as f64 - sample.memory_avail).max(0.0);
         let memory_usage_percentage = percentage(memory_used, memory_total as f64);
-        disk_read_sum += sample.disk_read * elapsed;
-        disk_write_sum += sample.disk_write * elapsed;
-        network_received_sum += network_received_delta as f64;
-        network_sent_sum += network_sent_delta as f64;
+        disk_read_sum += sample.disk_read;
+        disk_write_sum += sample.disk_write;
+        network_received_sum += network_received_value;
+        network_sent_sum += network_sent_value;
 
         let tailscale_received_absolute = tailscale_absolute.map(|totals| totals.received_bytes);
         let tailscale_sent_absolute = tailscale_absolute.map(|totals| totals.sent_bytes);

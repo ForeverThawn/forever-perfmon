@@ -3,19 +3,29 @@ use std::io;
 use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::{null, null_mut};
+use std::slice;
 
 use crate::app::format::round3;
 use crate::app::types::{IfTotals, Sample};
 
 const PDH_FMT_DOUBLE: u32 = 0x0000_0200;
 const ERROR_SUCCESS: u32 = 0;
+const PDH_MORE_DATA: u32 = 0x8000_07d2;
 const IF_MAX_STRING_SIZE: usize = 256;
 const IF_MAX_PHYS_ADDRESS_LENGTH: usize = 32;
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct PdhFmtCounterValue {
     c_status: u32,
     double_value: f64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PdhFmtCounterValueItemW {
+    sz_name: *mut u16,
+    fmt_value: PdhFmtCounterValue,
 }
 
 #[repr(C)]
@@ -108,12 +118,20 @@ unsafe extern "system" {
         value_type: *mut u32,
         value: *mut PdhFmtCounterValue,
     ) -> u32;
+    fn PdhGetFormattedCounterArrayW(
+        counter: isize,
+        format: u32,
+        buffer_size: *mut u32,
+        item_count: *mut u32,
+        item_buffer: *mut PdhFmtCounterValueItemW,
+    ) -> u32;
     fn PdhCloseQuery(query: isize) -> u32;
 }
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn GlobalMemoryStatusEx(buffer: *mut MemoryStatusEx) -> i32;
+    fn GetPhysicallyInstalledSystemMemory(total_memory_in_kilobytes: *mut u64) -> i32;
 }
 
 #[link(name = "iphlpapi")]
@@ -134,6 +152,8 @@ pub struct PerfCounters {
     memory_commit_limit: isize,
     disk_read: isize,
     disk_write: isize,
+    network_received: isize,
+    network_sent: isize,
     hyperv_avail: Option<isize>,
     hyperv_total: Option<isize>,
 }
@@ -247,6 +267,8 @@ impl PerfCounters {
         let memory_commit_limit = add_counter(query, r"\Memory\Commit Limit")?;
         let disk_read = add_counter(query, r"\PhysicalDisk(_Total)\Disk Read Bytes/sec")?;
         let disk_write = add_counter(query, r"\PhysicalDisk(_Total)\Disk Write Bytes/sec")?;
+        let network_received = add_counter(query, r"\Network Interface(*)\Bytes Received/sec")?;
+        let network_sent = add_counter(query, r"\Network Interface(*)\Bytes Sent/sec")?;
         let hyperv_avail = hyperv_vm_name.and_then(|hyperv_vm_name| {
             add_counter(
                 query,
@@ -280,6 +302,8 @@ impl PerfCounters {
             memory_commit_limit,
             disk_read,
             disk_write,
+            network_received,
+            network_sent,
             hyperv_avail,
             hyperv_total,
         };
@@ -316,6 +340,8 @@ impl PerfCounters {
             memory_commit_limit: counter_value(self.memory_commit_limit).unwrap_or(0.0),
             disk_read: counter_value(self.disk_read).unwrap_or(0.0),
             disk_write: counter_value(self.disk_write).unwrap_or(0.0),
+            network_received: counter_array_sum(self.network_received).unwrap_or(0.0),
+            network_sent: counter_array_sum(self.network_sent).unwrap_or(0.0),
             hyperv_avail_bytes: self
                 .hyperv_avail
                 .and_then(counter_value)
@@ -329,6 +355,10 @@ impl PerfCounters {
 }
 
 pub fn physical_memory_total() -> u64 {
+    if let Some(installed_memory) = physically_installed_memory_total() {
+        return installed_memory;
+    }
+
     unsafe {
         let mut status: MemoryStatusEx = zeroed();
         status.dw_length = size_of::<MemoryStatusEx>() as u32;
@@ -338,6 +368,13 @@ pub fn physical_memory_total() -> u64 {
             0
         }
     }
+}
+
+fn physically_installed_memory_total() -> Option<u64> {
+    let mut total_kb = 0u64;
+    let ok = unsafe { GetPhysicallyInstalledSystemMemory(&mut total_kb) != 0 };
+    ok.then(|| total_kb.saturating_mul(1024))
+        .filter(|total| *total > 0)
 }
 
 pub fn network_totals() -> io::Result<NetworkTotals> {
@@ -355,9 +392,9 @@ pub fn network_totals() -> io::Result<NetworkTotals> {
             },
         );
 
-        let alias = wide_array_to_string(&row.alias).to_ascii_lowercase();
-        let description = wide_array_to_string(&row.description).to_ascii_lowercase();
-        if alias.starts_with("tailscale") || description.contains("tailscale") {
+        let alias = wide_array_to_string(&row.alias);
+        let description = wide_array_to_string(&row.description);
+        if is_tailscale_adapter(&alias, &description) {
             tailscale_found = true;
             tailscale = add_totals(
                 tailscale,
@@ -405,11 +442,79 @@ fn counter_value(counter: isize) -> Option<f64> {
     }
 }
 
+fn counter_array_sum(counter: isize) -> Option<f64> {
+    let mut buffer_size = 0u32;
+    let mut item_count = 0u32;
+    let status = unsafe {
+        PdhGetFormattedCounterArrayW(
+            counter,
+            PDH_FMT_DOUBLE,
+            &mut buffer_size,
+            &mut item_count,
+            null_mut(),
+        )
+    };
+
+    if status != PDH_MORE_DATA {
+        return if status == ERROR_SUCCESS {
+            Some(0.0)
+        } else {
+            None
+        };
+    }
+
+    let item_size = size_of::<PdhFmtCounterValueItemW>();
+    let item_slots = (buffer_size as usize)
+        .div_ceil(item_size)
+        .max(item_count as usize);
+    let mut buffer = vec![
+        PdhFmtCounterValueItemW {
+            sz_name: null_mut(),
+            fmt_value: PdhFmtCounterValue {
+                c_status: 0,
+                double_value: 0.0,
+            },
+        };
+        item_slots
+    ];
+    buffer_size = (buffer.len() * item_size) as u32;
+
+    let status = unsafe {
+        PdhGetFormattedCounterArrayW(
+            counter,
+            PDH_FMT_DOUBLE,
+            &mut buffer_size,
+            &mut item_count,
+            buffer.as_mut_ptr(),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+
+    let values = unsafe { slice::from_raw_parts(buffer.as_ptr(), item_count as usize) };
+    Some(round3(
+        values
+            .iter()
+            .filter(|item| item.fmt_value.c_status == ERROR_SUCCESS)
+            .map(|item| item.fmt_value.double_value)
+            .sum(),
+    ))
+}
+
 fn add_totals(left: IfTotals, right: IfTotals) -> IfTotals {
     IfTotals {
         received_bytes: left.received_bytes.saturating_add(right.received_bytes),
         sent_bytes: left.sent_bytes.saturating_add(right.sent_bytes),
     }
+}
+
+fn is_tailscale_adapter(alias: &str, description: &str) -> bool {
+    let alias = alias.to_ascii_lowercase();
+    let description = description.to_ascii_lowercase();
+    alias.starts_with("tailscale")
+        && !alias.contains("npcap packet driver")
+        && !description.contains("npcap packet driver")
 }
 
 fn to_wide(value: &str) -> Vec<u16> {
@@ -437,10 +542,42 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    fn prints_tailscale_interface_totals() {
+        let totals = network_totals().expect("interface table should be readable");
+        if let Some(tailscale) = totals.tailscale {
+            println!(
+                "tailscale received={} sent={}",
+                tailscale.received_bytes, tailscale.sent_bytes
+            );
+        } else {
+            println!("tailscale not found");
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn prints_tailscale_interface_rows() {
+        let table = MibTable::get().expect("interface table should be readable");
+        table.for_each_row(|row| {
+            let alias = wide_array_to_string(&row.alias);
+            if alias.to_ascii_lowercase().starts_with("tailscale") {
+                let description = wide_array_to_string(&row.description);
+                println!(
+                    "index={} alias={alias} description={description} in={} out={}",
+                    row.interface_index, row.in_octets, row.out_octets
+                );
+            }
+        });
+    }
+
+    #[test]
     fn collects_pdh_sample() {
         let counters = PerfCounters::open(Some("ubuntu_22_04")).expect("pdh query should open");
         thread::sleep(Duration::from_secs(1));
         let sample = counters.collect().expect("pdh sample should collect");
         assert!(sample.cpu_usage >= 0.0);
+        assert!(sample.network_received.is_finite() && sample.network_received >= 0.0);
+        assert!(sample.network_sent.is_finite() && sample.network_sent >= 0.0);
     }
 }

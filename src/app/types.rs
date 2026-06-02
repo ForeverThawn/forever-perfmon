@@ -16,6 +16,8 @@ pub struct Sample {
     pub memory_commit_limit: f64,
     pub disk_read: f64,
     pub disk_write: f64,
+    pub network_received: f64,
+    pub network_sent: f64,
     pub hyperv_avail_bytes: Option<f64>,
     pub hyperv_total_bytes: Option<f64>,
 }
